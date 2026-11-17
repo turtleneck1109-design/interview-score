@@ -1,0 +1,31 @@
+{
+  "app": "shangma-score-offline",
+  "formatVersion": 2,
+  "type": "bank",
+  "questions": [
+    {
+      "id": "custom-template-001",
+      "category": "response",
+      "group": "all",
+      "text": "【示例，请替换】如果现场两名选手同时向你求助，你会如何安排处理顺序？",
+      "answer": "参考要点：判断紧急程度，优先处理安全风险，必要时寻求同伴或组长协助。"
+    },
+    {
+      "id": "custom-template-002",
+      "category": "scene",
+      "group": "lightning",
+      "text": "【示例，请替换】集合地点临时调整，你作为小闪电将如何通知并确认组员已收到消息？",
+      "answer": "参考要点：核实最新安排，统一通知，逐人确认，对未回复成员补充联系。"
+    },
+    {
+      "id": "custom-template-003",
+      "category": "photography",
+      "group": "photo",
+      "text": "【示例，请替换】拍摄环境光线不足时，你会怎样调整设备并保证活动记录质量？",
+      "answer": ""
+    }
+  ],
+  "members": [],
+  "candidates": [],
+  "evaluations": []
+}
