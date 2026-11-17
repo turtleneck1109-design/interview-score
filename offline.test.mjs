@@ -2,9 +2,33 @@ import test from 'node:test';import assert from 'node:assert/strict';import {rea
 import {empty,view,pack,completeBankPack,mergePackage,readLocal,writeLocal,KEY} from './lib/offline.mjs';
 import {enrich} from './lib/scoring.mjs';
 import {prepareEvaluation,responsePatch,removeQuestionPatch} from './lib/workspace.mjs';
+import {prepareInstructions} from './lib/instructions.mjs';
 import {surveyResponses,questionResponses} from './lib/questions.mjs';
 import {prepareCandidate,removeCandidate} from './lib/candidates.mjs';
 import {reviewerState,activeEvaluations,chooseReviewer,availableMembers,removeMember,restoreMember} from './lib/reviewers.mjs';
+test('custom arrangements and notices persist without changing candidates or submitted scores',()=>{
+ const memory=new Map();globalThis.localStorage={getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,v)};
+ const source=writeLocal(fixture()),before=structuredClone(source);const next=writeLocal(prepareInstructions(source,{activity:'周六上午集合\n地点：校园广场',notice:'结果通过邮件通知'}),source.revision);
+ assert.equal(readLocal().interviewInstructions.activity,'周六上午集合\n地点：校园广场');assert.equal(next.interviewInstructions.notice,'结果通过邮件通知');assert.equal(next.interviewInstructions.version,1);assert.deepEqual(next.candidates,before.candidates);assert.deepEqual(next.evaluations,before.evaluations);assert.deepEqual(source,before);
+ const cleared=writeLocal(prepareInstructions(next,{activity:'',notice:''}),next.revision);assert.equal(cleared.interviewInstructions.version,2);assert.equal(view(readLocal()).interviewInstructions.notice,'');
+});
+test('rosters and full backups preserve instructions while personal scores and question banks do not override them',()=>{
+ const configured=prepareInstructions(fixture(),{activity:'自备设备',notice:'短信通知'});
+ for(const type of ['all','roster']){const restored=mergePackage(empty(),pack(configured,type),bank).data;assert.deepEqual(restored.interviewInstructions,configured.interviewInstructions);}
+ for(const type of ['own','bank'])assert.equal(pack(configured,type).interviewInstructions,undefined);
+ assert.equal(completeBankPack(configured,bank).interviewInstructions,undefined);
+ const original=pack(fixture());assert.equal(mergePackage(empty(),original,bank).data.interviewInstructions,undefined);assert.deepEqual(mergePackage(configured,original,bank).data.interviewInstructions,configured.interviewInstructions);
+ const cleared=prepareInstructions(configured,{activity:'',notice:''});const restored=mergePackage(configured,pack(cleared,'roster'),bank).data;assert.equal(restored.interviewInstructions.activity,'');assert.equal(mergePackage(restored,pack(configured,'roster'),bank).data.interviewInstructions.activity,'');
+});
+test('instruction imports keep local settings on conflicting versions or different interview names',()=>{
+ const original=prepareInstructions(fixture(),{activity:'当前安排',notice:'当前通知'}),conflict=prepareInstructions(fixture(),{activity:'另一份安排',notice:'另一份通知'});const merged=mergePackage(original,pack(conflict,'roster'),bank);assert.equal(merged.instructionsKept,true);assert.deepEqual(merged.data.interviewInstructions,original.interviewInstructions);
+ const different=prepareInstructions({...original,interviewName:'另一场面试'},{activity:'另一场活动',notice:'新的渠道'});const result=mergePackage(original,pack(different,'roster'),bank);assert.equal(result.instructionsKept,true);assert.deepEqual(result.data.interviewInstructions,original.interviewInstructions);
+ const fresh=mergePackage(empty(),pack(different,'roster'),bank).data;assert.equal(fresh.interviewName,'另一场面试');assert.deepEqual(fresh.interviewInstructions,different.interviewInstructions);
+});
+test('invalid instructions cannot be saved or imported and leave existing data intact',()=>{
+ const original=fixture(),before=structuredClone(original);assert.throws(()=>prepareInstructions(original,{activity:'字'.repeat(4001),notice:''}),/4000/);assert.deepEqual(original,before);
+ const packet=pack(prepareInstructions(original,{activity:'集合说明',notice:''}));for(const invalid of [{...packet.interviewInstructions,notice:1},{...packet.interviewInstructions,version:0},{...packet.interviewInstructions,updatedAt:'bad'},{...packet.interviewInstructions,activity:'字'.repeat(4001)}]){assert.throws(()=>mergePackage(original,{...packet,interviewInstructions:invalid},bank),/格式不正确/);assert.deepEqual(original,before);}
+});
 test('removing the current interviewer preserves scores, ownership and answers and selects an available interviewer',()=>{
  const ds=fixture();ds.members.push({id:'b',name:'面试官b'});ds.candidates[0].reviewerId='a';ds.evaluations[0].responses={q01:'保留回答'};const before=structuredClone(ds),scores=enrich(activeEvaluations(ds),ds.candidates);
  const removed=removeMember(ds,'a');assert.equal(removed.me.id,'b');assert.equal(removed.activeId,'b');assert.deepEqual(availableMembers(removed).map(m=>m.id),['b']);assert.deepEqual(removed.candidates,ds.candidates);assert.deepEqual(removed.evaluations,ds.evaluations);assert.deepEqual(enrich(activeEvaluations(removed),removed.candidates),scores);assert.deepEqual(ds,before);
