@@ -3,9 +3,69 @@ import {empty,view,pack,completeBankPack,mergePackage,readLocal,writeLocal,KEY} 
 import {enrich} from './lib/scoring.mjs';
 import {prepareEvaluation,responsePatch,removeQuestionPatch} from './lib/workspace.mjs';
 import {prepareInstructions} from './lib/instructions.mjs';
+import {durationMs,formatDuration,interviewChanged,startTiming,stopTiming} from './lib/timing.mjs';
 import {surveyResponses,questionResponses} from './lib/questions.mjs';
 import {prepareCandidate,removeCandidate} from './lib/candidates.mjs';
 import {reviewerState,activeEvaluations,chooseReviewer,availableMembers,removeMember,restoreMember} from './lib/reviewers.mjs';
+test('first scoring edit starts the timer, autosave keeps its start, and submission freezes the duration',()=>{
+ const ds=fixture();ds.evaluations=[];
+ const initial={scores:{feeling:2},asked:[],responses:{},customQuestions:[],notes:'',availability:'',status:'draft',version:0};
+ const first=prepareEvaluation(ds,initial,'c','a',bank,false,1000);
+ assert.deepEqual(first.saved.timing,{elapsedMs:0,startedAt:1000});
+ const completed=prepareEvaluation(first.data,{...first.saved,scores:fixture().evaluations[0].scores,availability:'yes'},'c','a',bank,false,5000);
+ assert.deepEqual(completed.saved.timing,first.saved.timing);assert.equal(durationMs(completed.saved.timing,5000),4000);
+ const submitted=prepareEvaluation(completed.data,completed.saved,'c','a',bank,true,9000);
+ assert.equal(submitted.saved.status,'submitted');assert.deepEqual(submitted.saved.timing,{elapsedMs:8000,startedAt:null});assert.equal(durationMs(submitted.saved.timing,60000),8000);
+ assert.equal(completed.saved.timing.startedAt,1000);
+ const repeated=prepareEvaluation(submitted.data,submitted.saved,'c','a',bank,true,10000);assert.deepEqual(repeated.saved.timing,submitted.saved.timing);
+ const revised=prepareEvaluation(repeated.data,{...repeated.saved,notes:'补充说明'},'c','a',bank,false,20000);
+ assert.equal(revised.saved.status,'draft');assert.deepEqual(revised.saved.timing,{elapsedMs:8000,startedAt:20000});
+ assert.deepEqual(prepareEvaluation(revised.data,revised.saved,'c','a',bank,true,23000).saved.timing,{elapsedMs:11000,startedAt:null});
+});
+test('failed submission and a failed storage commit do not stop or mutate the current timer',()=>{
+ const ds=fixture();ds.evaluations=[];
+ const initial={scores:{feeling:2},asked:[],notes:'',availability:'',status:'draft',version:0};
+ const running=prepareEvaluation(ds,initial,'c','a',bank,false,1000),before=structuredClone(running);
+ assert.throws(()=>prepareEvaluation(running.data,running.saved,'c','a',bank,true,6000));assert.deepEqual(running,before);assert.equal(durationMs(running.saved.timing,6000),5000);
+ const memory=new Map();globalThis.localStorage={getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,v)};
+ const stored=writeLocal(running.data),ready=prepareEvaluation(stored,{...running.saved,scores:fixture().evaluations[0].scores,availability:'yes'},'c','a',bank,false,7000);
+ const saved=writeLocal(ready.data,stored.revision),submitted=prepareEvaluation(saved,ready.saved,'c','a',bank,true,9000);
+ writeLocal(saved,saved.revision);assert.throws(()=>writeLocal(submitted.data,saved.revision),/另一个页面/);
+ assert.equal(readLocal().evaluations[0].timing.startedAt,1000);assert.equal(ready.saved.timing.startedAt,1000);
+});
+test('only substantive interview changes trigger timing and identical values or metadata do not',()=>{
+ const original=fixture().evaluations[0];
+ assert.equal(interviewChanged(original,{...original,status:'draft',version:2,updatedAt:'new',timing:startTiming(undefined,1000)}),false);
+ assert.equal(interviewChanged(original,{...original,scores:Object.fromEntries(Object.entries(original.scores).reverse()),asked:[...original.asked].reverse(),responses:{},customQuestions:[]}),false);
+ assert.equal(interviewChanged(undefined,{scores:{},asked:[],notes:'',availability:'',status:'draft'}),false);
+ for(const patch of [{scores:{...original.scores,feeling:2.5}},{responses:{q01:'回答'}},{asked:[]},{notes:'备注'},{availability:'no'},{customQuestions:[{id:'custom-time',category:'intro',group:'all',text:'自拟问题',answer:''}]}])assert.equal(interviewChanged(original,{...original,...patch}),true);
+});
+test('candidate timers remain independent across switching, storage reload and backup import',()=>{
+ const memory=new Map();globalThis.localStorage={getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,v)};
+ let ds=fixture();ds.evaluations=[];ds.candidates.push({...candidate('second'),studentId:'000456'});ds=writeLocal(ds);
+ const initial={scores:{feeling:2},asked:[],notes:'',availability:'',status:'draft',version:0};
+ const first=prepareEvaluation(ds,initial,'c','a',bank,false,1000);ds=writeLocal(first.data,ds.revision);
+ const second=prepareEvaluation(ds,initial,'second','a',bank,false,5000);writeLocal(second.data,ds.revision);
+ const restored=view(readLocal());assert.equal(durationMs(restored.evaluations.find(e=>e.candidateId==='c').timing,7000),6000);assert.equal(durationMs(restored.evaluations.find(e=>e.candidateId==='second').timing,7000),2000);
+ for(const type of ['all','own']){const copied=mergePackage(empty(),pack(restored,type),bank).data;assert.deepEqual(copied.evaluations.map(e=>e.timing),restored.evaluations.map(e=>e.timing));}
+});
+test('completed durations survive backups and conflicting or malformed timing is rejected',()=>{
+ const ds=fixture();ds.evaluations[0].timing={elapsedMs:65000,startedAt:null};
+ const copied=mergePackage(empty(),pack(ds),bank).data;assert.deepEqual(copied.evaluations[0].timing,ds.evaluations[0].timing);assert.equal(mergePackage(copied,pack(ds),bank).skipped,1);
+ const conflict=structuredClone(pack(ds));conflict.evaluations[0].timing.elapsedMs++;assert.throws(()=>mergePackage(ds,conflict,bank),/同版本评分冲突/);
+ for(const timing of [null,[],{}, {elapsedMs:-1,startedAt:null},{elapsedMs:1.5,startedAt:null},{elapsedMs:0,startedAt:'1000'},{elapsedMs:0,startedAt:1000},{elapsedMs:0,startedAt:Infinity}]){const packet=structuredClone(pack(ds));packet.evaluations[0].timing=timing;assert.throws(()=>mergePackage(ds,packet,bank),/面试用时格式/);}
+ assert.deepEqual(ds.evaluations[0].timing,{elapsedMs:65000,startedAt:null});
+});
+test('legacy records have no invented duration and start timing only when edited',()=>{
+ const ds=fixture(),copy=mergePackage(empty(),pack(ds),bank).data;
+ assert.equal(copy.evaluations[0].timing,undefined);
+ assert.equal(prepareEvaluation(ds,ds.evaluations[0],'c','a',bank,true,1000).saved.timing,undefined);
+ const revised=prepareEvaluation(ds,{...ds.evaluations[0],notes:'本次修改'},'c','a',bank,false,2000);assert.deepEqual(revised.saved.timing,{elapsedMs:0,startedAt:2000});
+});
+test('duration display supports hours and does not count backwards after a clock correction',()=>{
+ assert.equal(formatDuration(undefined,0),'00:00');assert.equal(formatDuration({elapsedMs:65000,startedAt:null}),'01:05');assert.equal(formatDuration({elapsedMs:3661000,startedAt:null}),'01:01:01');
+ const timing={elapsedMs:3000,startedAt:5000};assert.equal(durationMs(timing,4000),3000);assert.deepEqual(stopTiming(timing,6000),{elapsedMs:4000,startedAt:null});assert.deepEqual(startTiming(timing,6000),timing);
+});
 test('custom arrangements and notices persist without changing candidates or submitted scores',()=>{
  const memory=new Map();globalThis.localStorage={getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,v)};
  const source=writeLocal(fixture()),before=structuredClone(source);const next=writeLocal(prepareInstructions(source,{activity:'周六上午集合\n地点：校园广场',notice:'结果通过邮件通知'}),source.revision);
