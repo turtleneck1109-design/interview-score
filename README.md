@@ -1,5 +1,7 @@
 # 面试评分台
 
+[在线使用](https://turtleneck1109-design.github.io/interview-score/) · [下载离线 HTML](https://github.com/turtleneck1109-design/interview-score/raw/refs/heads/main/docs/index.html)
+
 免登录的面试评分网页。支持在线打开，也可下载 `docs/index.html` 双击离线使用。
 
 ## 功能
