@@ -1,7 +1,8 @@
 import {build} from 'esbuild';
 import {readFile,writeFile,mkdir,copyFile} from 'node:fs/promises';
+import {standaloneHtml} from './lib/html.mjs';
 const root=new URL('./',import.meta.url).pathname;
 const result=await build({entryPoints:[root+'entry.tsx'],bundle:true,write:false,format:'iife',platform:'browser',target:['es2020'],jsx:'automatic',minify:true,legalComments:'inline',define:{'process.env.NODE_ENV':'"production"'}});
-const js=result.outputFiles[0].text.replace(/<\/script/gi,'<\\/script');const css=await readFile(root+'app/style.css','utf8');
-const html='<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data:; connect-src \'none\'; base-uri \'none\'; form-action \'none\'"><title>面试评分台 · 免登录离线版</title><style>'+css+'</style></head><body><div id="root"></div><noscript>请启用浏览器 JavaScript 以使用评分功能。</noscript><script>'+js+'</script></body></html>';
+const js=result.outputFiles[0].text;const css=await readFile(root+'app/style.css','utf8');
+const html=standaloneHtml(js,css);
 const output=new URL('./docs/index.html',import.meta.url);await mkdir(new URL('./docs/',import.meta.url),{recursive:true});await writeFile(output,html);await writeFile(new URL('./docs/.nojekyll',import.meta.url),'');await copyFile(new URL('./lib/bank-template.json',import.meta.url),new URL('./docs/题库导入模板.json',import.meta.url));await writeFile(new URL('./docs/题库模板填写说明.txt',import.meta.url),JSON.parse(await readFile(new URL('./lib/bank-guide.json',import.meta.url),'utf8')));console.log(output.pathname+' ('+Buffer.byteLength(html)+' bytes)');
