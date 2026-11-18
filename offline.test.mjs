@@ -3,7 +3,7 @@ import {empty,view,pack,completeBankPack,mergePackage,readLocal,writeLocal,reset
 import {enrich} from './lib/scoring.mjs';
 import {prepareEvaluation,responsePatch,removeQuestionPatch} from './lib/workspace.mjs';
 import {prepareInstructions} from './lib/instructions.mjs';
-import {durationMs,formatDuration,interviewChanged,startTiming,stopTiming} from './lib/timing.mjs';
+import {durationMs,formatDuration,interviewChanged,startTiming,stopTiming,interviewPeriods,formatTimestamp,formatPeriod,timingColumns} from './lib/timing.mjs';
 import {surveyResponses,questionResponses} from './lib/questions.mjs';
 import {prepareCandidate,removeCandidate} from './lib/candidates.mjs';
 import {reviewerState,activeEvaluations,chooseReviewer,availableMembers,removeMember,restoreMember,needsReviewerName,setReviewerName} from './lib/reviewers.mjs';
@@ -56,16 +56,16 @@ test('first scoring edit starts the timer, autosave keeps its start, and submiss
  const ds=fixture();ds.evaluations=[];
  const initial={scores:{feeling:2},asked:[],responses:{},customQuestions:[],notes:'',availability:'',status:'draft',version:0};
  const first=prepareEvaluation(ds,initial,'c','a',bank,false,1000);
- assert.deepEqual(first.saved.timing,{elapsedMs:0,startedAt:1000});
+ assert.deepEqual(first.saved.timing,{elapsedMs:0,startedAt:1000,periods:[{start:1000,end:null}]});
  const completed=prepareEvaluation(first.data,{...first.saved,scores:fixture().evaluations[0].scores,availability:'yes'},'c','a',bank,false,5000);
  assert.deepEqual(completed.saved.timing,first.saved.timing);assert.equal(durationMs(completed.saved.timing,5000),4000);
  const submitted=prepareEvaluation(completed.data,completed.saved,'c','a',bank,true,9000);
- assert.equal(submitted.saved.status,'submitted');assert.deepEqual(submitted.saved.timing,{elapsedMs:8000,startedAt:null});assert.equal(durationMs(submitted.saved.timing,60000),8000);
+ assert.equal(submitted.saved.status,'submitted');assert.deepEqual(submitted.saved.timing,{elapsedMs:8000,startedAt:null,periods:[{start:1000,end:9000}]});assert.equal(durationMs(submitted.saved.timing,60000),8000);
  assert.equal(completed.saved.timing.startedAt,1000);
  const repeated=prepareEvaluation(submitted.data,submitted.saved,'c','a',bank,true,10000);assert.deepEqual(repeated.saved.timing,submitted.saved.timing);
  const revised=prepareEvaluation(repeated.data,{...repeated.saved,notes:'补充说明'},'c','a',bank,false,20000);
- assert.equal(revised.saved.status,'draft');assert.deepEqual(revised.saved.timing,{elapsedMs:8000,startedAt:20000});
- assert.deepEqual(prepareEvaluation(revised.data,revised.saved,'c','a',bank,true,23000).saved.timing,{elapsedMs:11000,startedAt:null});
+ assert.equal(revised.saved.status,'draft');assert.deepEqual(revised.saved.timing,{elapsedMs:8000,startedAt:20000,periods:[{start:1000,end:9000},{start:20000,end:null}]});
+ assert.deepEqual(prepareEvaluation(revised.data,revised.saved,'c','a',bank,true,23000).saved.timing,{elapsedMs:11000,startedAt:null,periods:[{start:1000,end:9000},{start:20000,end:23000}]});
 });
 test('failed submission and a failed storage commit do not stop or mutate the current timer',()=>{
  const ds=fixture();ds.evaluations=[];
@@ -105,11 +105,32 @@ test('legacy records have no invented duration and start timing only when edited
  const ds=fixture(),copy=mergePackage(empty(),pack(ds),bank).data;
  assert.equal(copy.evaluations[0].timing,undefined);
  assert.equal(prepareEvaluation(ds,ds.evaluations[0],'c','a',bank,true,1000).saved.timing,undefined);
- const revised=prepareEvaluation(ds,{...ds.evaluations[0],notes:'本次修改'},'c','a',bank,false,2000);assert.deepEqual(revised.saved.timing,{elapsedMs:0,startedAt:2000});
+ const revised=prepareEvaluation(ds,{...ds.evaluations[0],notes:'本次修改'},'c','a',bank,false,2000);assert.deepEqual(revised.saved.timing,{elapsedMs:0,startedAt:2000,periods:[{start:2000,end:null}]});
 });
 test('duration display supports hours and does not count backwards after a clock correction',()=>{
  assert.equal(formatDuration(undefined,0),'00:00');assert.equal(formatDuration({elapsedMs:65000,startedAt:null}),'01:05');assert.equal(formatDuration({elapsedMs:3661000,startedAt:null}),'01:01:01');
- const timing={elapsedMs:3000,startedAt:5000};assert.equal(durationMs(timing,4000),3000);assert.deepEqual(stopTiming(timing,6000),{elapsedMs:4000,startedAt:null});assert.deepEqual(startTiming(timing,6000),timing);
+ const timing={elapsedMs:3000,startedAt:5000};assert.equal(durationMs(timing,4000),3000);assert.deepEqual(stopTiming(timing,6000),{elapsedMs:4000,startedAt:null,periods:[{start:5000,end:6000}]});assert.deepEqual(startTiming(timing,6000),timing);
+});
+test('recorded interview periods survive transfer and conflicting or invalid periods are rejected',()=>{
+ const ds=fixture();ds.evaluations[0].timing=stopTiming(startTiming(stopTiming(startTiming(undefined,1000),9000),20000),23000);
+ const packet=pack(ds),restored=mergePackage(empty(),packet,bank).data;
+ assert.deepEqual(restored.evaluations[0].timing.periods,[{start:1000,end:9000},{start:20000,end:23000}]);assert.equal(mergePackage(restored,packet,bank).skipped,1);
+ const conflict=structuredClone(packet);conflict.evaluations[0].timing.periods[0].start=2000;assert.throws(()=>mergePackage(restored,conflict,bank),/同版本评分冲突/);
+ for(const periods of [[],null,[{start:-1,end:2000}],[{start:1000,end:500}],[{start:1000,end:null}],[{start:1000,end:9000},{start:8000,end:23000}],[{start:1000,end:'9000'}],[{start:1000,end:null},{start:2000,end:23000}]]){const invalid=structuredClone(packet);invalid.evaluations[0].timing.periods=periods;assert.throws(()=>mergePackage(restored,invalid,bank),/面试时间段/);}
+ assert.deepEqual(ds.evaluations[0].timing.periods,[{start:1000,end:9000},{start:20000,end:23000}]);
+});
+test('legacy durations never invent past periods and new recording preserves known timestamps',()=>{
+ const oldClosed={elapsedMs:12000,startedAt:null};assert.deepEqual(interviewPeriods(oldClosed),[]);assert.deepEqual(stopTiming(oldClosed,50000),oldClosed);
+ const resumed=startTiming(oldClosed,60000);assert.deepEqual(resumed.periods,[{start:60000,end:null}]);assert.equal(durationMs(stopTiming(resumed,62000)),14000);
+ const oldRunning={elapsedMs:12000,startedAt:60000};assert.deepEqual(interviewPeriods(oldRunning),[{start:60000,end:null}]);assert.deepEqual(stopTiming(oldRunning,62000).periods,[{start:60000,end:62000}]);
+ const backwards=stopTiming(startTiming(undefined,5000),4000);assert.deepEqual(backwards.periods,[{start:5000,end:5000}]);assert.equal(startTiming(backwards,3000).startedAt,5000);
+});
+test('time period display and CSV columns include dates, midnight crossings and ongoing state',()=>{
+ const start=new Date(2026,10,18,23,59,0).getTime(),end=new Date(2026,10,19,0,1,0).getTime();
+ assert.equal(formatTimestamp(start),'2026-11-18 23:59:00');assert.equal(formatPeriod({start,end}),'2026-11-18 23:59:00 — 2026-11-19 00:01:00');
+ assert.equal(formatPeriod({start,end:start+30000}),'2026-11-18 23:59:00 — 23:59:30');
+ const running=startTiming(undefined,start);assert.deepEqual(timingColumns(running),['2026-11-18 23:59:00','','2026-11-18 23:59:00 — 进行中']);
+ const ended=stopTiming(running,end),resumed=startTiming(ended,end+60000);assert.equal(timingColumns(ended)[1],'2026-11-19 00:01:00');assert.equal(timingColumns(resumed)[0],'2026-11-18 23:59:00');assert.equal(timingColumns(resumed)[1],'');assert.equal(timingColumns(resumed)[2].split('\n').length,2);assert.deepEqual(timingColumns(undefined),['','','']);
 });
 test('custom arrangements and notices persist without changing candidates or submitted scores',()=>{
  const memory=new Map();globalThis.localStorage={getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,v)};
