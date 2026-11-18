@@ -1,5 +1,5 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';
-import {empty,view,pack,completeBankPack,mergePackage,readLocal,writeLocal,KEY} from './lib/offline.mjs';
+import {empty,view,pack,completeBankPack,mergePackage,readLocal,writeLocal,resetLocal,KEY} from './lib/offline.mjs';
 import {enrich} from './lib/scoring.mjs';
 import {prepareEvaluation,responsePatch,removeQuestionPatch} from './lib/workspace.mjs';
 import {prepareInstructions} from './lib/instructions.mjs';
@@ -7,6 +7,30 @@ import {durationMs,formatDuration,interviewChanged,startTiming,stopTiming} from 
 import {surveyResponses,questionResponses} from './lib/questions.mjs';
 import {prepareCandidate,removeCandidate} from './lib/candidates.mjs';
 import {reviewerState,activeEvaluations,chooseReviewer,availableMembers,removeMember,restoreMember,needsReviewerName,setReviewerName} from './lib/reviewers.mjs';
+test('reset clears only this app data, preserves built-in questions and allows restoring a backup',()=>{
+ const store=new Map([['unrelated-app','keep']]);globalThis.localStorage={getItem:k=>store.get(k)||null,setItem:(k,v)=>store.set(k,v)};
+ const source={...fixture(),candidates:fixture().candidates.map(c=>({...c,candidateNotes:'测试备注'})),interviewName:'测试面试',reviewerNameConfirmed:true,questions:[{id:'custom-reset',category:'intro',group:'all',text:'测试题',answer:''}],interviewInstructions:{activity:'活动安排',notice:'结果通知',version:1,updatedAt:'2026-11-18T00:00:00Z'}};
+ const before=writeLocal(source),backup=pack(before),originalBank=structuredClone(bank),cleared=resetLocal(before.revision,'确认清空');
+ assert.equal(cleared.revision,before.revision+1);assert.deepEqual(cleared.candidates,[]);assert.deepEqual(cleared.evaluations,[]);assert.deepEqual(cleared.questions,[]);assert.equal(cleared.interviewInstructions,undefined);assert.equal(cleared.interviewName,empty().interviewName);
+ assert.equal(cleared.members.length,1);assert.ok(!before.members.some(m=>m.id===cleared.me.id));assert.equal(needsReviewerName(cleared),true);assert.equal(store.get('unrelated-app'),'keep');assert.deepEqual(bank,originalBank);
+ assert.deepEqual(view(readLocal()),cleared);assert.throws(()=>writeLocal(before,before.revision),/另一个页面/);
+ const restored=mergePackage(cleared,backup,bank).data;assert.deepEqual(restored.candidates,backup.candidates);assert.equal(restored.evaluations.length,before.evaluations.length);assert.equal(restored.questions[0].id,'custom-reset');assert.equal(restored.interviewInstructions.activity,'活动安排');
+});
+test('reset requires the exact confirmation and rejects data changed after confirmation began',()=>{
+ const store=new Map();globalThis.localStorage={getItem:k=>store.get(k)||null,setItem:(k,v)=>store.set(k,v)};
+ const initial=writeLocal(fixture()),raw=store.get(KEY);
+ for(const word of ['',undefined,'清空','确认清空 '])assert.throws(()=>resetLocal(initial.revision,word),/请输入/);
+ assert.equal(store.get(KEY),raw);
+ const updated=writeLocal({...initial,interviewName:'另一页面更新'},initial.revision);
+ assert.throws(()=>resetLocal(initial.revision,'确认清空'),/另一个页面/);assert.equal(readLocal().interviewName,updated.interviewName);assert.equal(readLocal().candidates.length,initial.candidates.length);
+});
+test('failed reset storage write leaves the original saved records intact',()=>{
+ const store=new Map();globalThis.localStorage={getItem:k=>store.get(k)||null,setItem:(k,v)=>store.set(k,v)};
+ const initial=writeLocal(fixture()),raw=store.get(KEY);
+ globalThis.localStorage.setItem=()=>{throw Error('storage denied')};
+ assert.throws(()=>resetLocal(initial.revision,'确认清空'),/清空失败/);assert.equal(store.get(KEY),raw);assert.deepEqual(view(readLocal()),initial);
+ globalThis.localStorage.setItem=(k,v)=>store.set(k,v);
+});
 test('first-use name setup persists and keeps the original reviewer identity',()=>{
  const memory=new Map();globalThis.localStorage={getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,v)};
  const initial=view(readLocal()),id=initial.me.id;assert.equal(needsReviewerName(initial),true);
