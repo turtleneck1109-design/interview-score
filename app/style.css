@@ -37,7 +37,7 @@ h1{font-size:24px;letter-spacing:0;line-height:1.3}h2{font-size:16px}h3{font-siz
 .member-actions{display:flex;align-items:center;gap:12px;white-space:nowrap}.member-actions .text-button{display:inline-flex;align-items:center;gap:4px}.member-delete{color:#a45a51}.archived-members{margin:16px 18px}.archived-member{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)}.archived-member:last-child{border-bottom:0}.archived-member small{font-size:11px;color:var(--muted);display:block;margin-top:3px}
 .interview-instructions{margin-top:16px;padding:14px 16px;border:1px solid var(--border);border-radius:8px;background:#fafcf9}.instructions-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.instructions-heading b{font-size:13px;font-weight:500;color:#607761}.instructions-heading .text-button{display:flex;gap:4px;align-items:center;font-size:12px;padding:3px}.interview-instructions>.muted{margin-top:7px}.interview-instructions .inline-help{margin-top:10px;font-size:13px}.interview-instructions .inline-help p{white-space:pre-wrap;overflow-wrap:anywhere;color:#566e5c}.interview-settings>.interview-instructions{margin:0 18px 18px}
 
-.timer[role="timer"]{cursor:default;font-variant-numeric:tabular-nums;white-space:nowrap}.timer.running{color:var(--green,#296451)}
+.timer[role="timer"]{cursor:default;font-variant-numeric:tabular-nums;white-space:nowrap}.timer.running{color:var(--green,#296451)}.timer.overdue{color:#c0392b}
 
 .header-download{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px}.header-download svg{flex-shrink:0}@media(max-width:600px){.header-download{padding:7px}.header-download span{display:none}}
 
