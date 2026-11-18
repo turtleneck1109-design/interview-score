@@ -6,7 +6,28 @@ import {prepareInstructions} from './lib/instructions.mjs';
 import {durationMs,formatDuration,interviewChanged,startTiming,stopTiming} from './lib/timing.mjs';
 import {surveyResponses,questionResponses} from './lib/questions.mjs';
 import {prepareCandidate,removeCandidate} from './lib/candidates.mjs';
-import {reviewerState,activeEvaluations,chooseReviewer,availableMembers,removeMember,restoreMember} from './lib/reviewers.mjs';
+import {reviewerState,activeEvaluations,chooseReviewer,availableMembers,removeMember,restoreMember,needsReviewerName,setReviewerName} from './lib/reviewers.mjs';
+test('first-use name setup persists and keeps the original reviewer identity',()=>{
+ const memory=new Map();globalThis.localStorage={getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,v)};
+ const initial=view(readLocal()),id=initial.me.id;assert.equal(needsReviewerName(initial),true);
+ const saved=writeLocal(setReviewerName(initial,'  测试面试官  '),initial.revision),reopened=view(readLocal());
+ assert.equal(saved.me.name,'测试面试官');assert.equal(reopened.me.id,id);assert.equal(reopened.members.length,1);assert.equal(needsReviewerName(reopened),false);
+ assert.deepEqual(reopened.evaluations,[]);assert.deepEqual(reopened.candidates,[]);assert.equal(pack(reopened).reviewerNameConfirmed,undefined);
+});
+test('name setup rejects blank or oversized values without changing data',()=>{
+ const initial=view(empty()),before=structuredClone(initial);
+ for(const value of ['', '   ',null,42,'字'.repeat(41)])assert.throws(()=>setReviewerName(initial,value),/面试官姓名/);
+ assert.deepEqual(initial,before);assert.equal(needsReviewerName(initial),true);
+ assert.equal(needsReviewerName(setReviewerName(initial,'面试官 1')),false);
+});
+test('legacy named reviewers skip setup and completing a default name preserves scores and ownership',()=>{
+ const legacy=fixture();assert.equal(needsReviewerName(legacy),false);
+ legacy.members[0].name='面试官 1';legacy.me=legacy.members[0];legacy.candidates[0].reviewerId=legacy.me.id;legacy.evaluations[0].timing={elapsedMs:12000,startedAt:null};
+ const before=structuredClone(legacy);assert.equal(needsReviewerName(legacy),true);
+ const configured=setReviewerName(legacy,'正式面试官');assert.equal(needsReviewerName(configured),false);assert.equal(configured.me.id,legacy.me.id);
+ assert.deepEqual(configured.candidates,legacy.candidates);assert.deepEqual(configured.evaluations,legacy.evaluations);assert.deepEqual(legacy,before);
+ assert.equal(reviewerState(configured,'c').ownerId,legacy.me.id);assert.equal(pack(configured,'own').members[0].name,'正式面试官');
+});
 test('first scoring edit starts the timer, autosave keeps its start, and submission freezes the duration',()=>{
  const ds=fixture();ds.evaluations=[];
  const initial={scores:{feeling:2},asked:[],responses:{},customQuestions:[],notes:'',availability:'',status:'draft',version:0};
