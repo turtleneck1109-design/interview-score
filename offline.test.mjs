@@ -1,11 +1,12 @@
+import {parseRoster,previewRoster,importRoster} from './lib/roster.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';
 import {empty,view,pack,completeBankPack,mergePackage,readLocal,writeLocal,resetLocal,KEY} from './lib/offline.mjs';
-import {enrich} from './lib/scoring.mjs';
+import {enrich,rankCandidates} from './lib/scoring.mjs';
 import {prepareEvaluation,responsePatch,removeQuestionPatch} from './lib/workspace.mjs';
 import {prepareInstructions} from './lib/instructions.mjs';
 import {durationMs,formatDuration,interviewChanged,startTiming,stopTiming,interviewPeriods,formatTimestamp,formatPeriod,timingColumns} from './lib/timing.mjs';
 import {surveyResponses,questionResponses} from './lib/questions.mjs';
-import {prepareCandidate,removeCandidate} from './lib/candidates.mjs';
+import {prepareCandidate,removeCandidate,needsCandidateProfile} from './lib/candidates.mjs';
 import {reviewerState,activeEvaluations,chooseReviewer,availableMembers,removeMember,restoreMember,needsReviewerName,setReviewerName} from './lib/reviewers.mjs';
 test('reset clears only this app data, preserves built-in questions and allows restoring a backup',()=>{
  const store=new Map([['unrelated-app','keep']]);globalThis.localStorage={getItem:k=>store.get(k)||null,setItem:(k,v)=>store.set(k,v)};
@@ -317,3 +318,68 @@ test('automatic draft writes preserve consecutive edits and remain excluded unti
 test('autosaving a new library question and its question record is atomic',async()=>{const {prepareEvaluation}=await import('./lib/workspace.mjs');let ds=fixture();const q={id:'custom-auto',category:'response',group:'all',text:'自动保存测试题',answer:''};ds={...ds,questions:[q]};const e=ds.evaluations[0];const result=prepareEvaluation(ds,{...e,asked:[...e.asked,q.id]},e.candidateId,e.userId,[...bank,q]);const imported=mergePackage(empty(),pack(result.data),bank);assert.equal(imported.data.questions[0].id,q.id);assert.ok(imported.data.evaluations[0].asked.includes(q.id));assert.equal(imported.data.evaluations[0].status,'draft');});
 test('auto writes cannot overwrite a newer score version',async()=>{const {prepareEvaluation}=await import('./lib/workspace.mjs');const ds=fixture(),original=ds.evaluations[0];const one=prepareEvaluation(ds,{...original,notes:'新备注'},original.candidateId,original.userId,bank);assert.throws(()=>prepareEvaluation(one.data,{...original,notes:'旧页面备注'},original.candidateId,original.userId,bank),/评分已更新/);assert.equal(one.data.evaluations[0].notes,'新备注');});
 test('interview name survives backup and empty-workspace import, with safe filename generation',async()=>{const {DEFAULT_INTERVIEW_NAME,validInterviewName,fileLabel}=await import('./lib/workspace.mjs');const ds={...fixture(),interviewName:'2027 春季志愿者面试'};const p=pack(ds);assert.equal(p.interviewName,ds.interviewName);assert.equal(mergePackage(empty(),p,bank).data.interviewName,ds.interviewName);assert.equal(mergePackage({...fixture(),interviewName:'另一场面试'},p,bank).data.interviewName,'另一场面试');assert.equal(pack(ds,'bank').interviewName,undefined);assert.equal(view(fixture()).interviewName,DEFAULT_INTERVIEW_NAME);assert.equal(validInterviewName('  '),false);assert.equal(validInterviewName('x'.repeat(81)),false);assert.equal(fileLabel('春季/面试: A?'),'春季_面试_ A_');});
+
+test('bulk roster parses Excel paste, reversed headers, CSV quoting and leading-zero student IDs',()=>{
+ assert.deepEqual(parseRoster('\uFEFF学号\t姓名\r\n00123\t张三\r\n\r\n00124\t李四'),[{studentId:'00123',name:'张三',line:2},{studentId:'00124',name:'李四',line:4}]);
+ assert.deepEqual(parseRoster('姓名,学号\n"李,四","00012"\n"张""三",0013').map(({studentId,name})=>({studentId,name})),[{studentId:'00012',name:'李,四'},{studentId:'0013',name:'张"三'}]);
+ assert.equal(parseRoster('王五  0009','name-id')[0].studentId,'0009');
+ assert.equal(parseRoster('0009 王五')[0].name,'王五');
+});
+test('bulk roster rejects malformed rows without importing any partial data',()=>{
+ const ds=fixture(),before=structuredClone(ds);
+ for(const text of ['学号,姓名','0001,张三\n0002,李四,闵行','0001,张三\n,李四','1.234E+11,张三','001,"未闭合','001,"张三"坏字符','001,姓名\n002,"李""四'])assert.throws(()=>importRoster(ds,text,'id-name',()=> 'new-id'));
+ assert.throws(()=>parseRoster('001,张三\n002,李四,多余'),/第 2 行/);
+ assert.deepEqual(ds,before);
+});
+test('bulk roster skips identical duplicates and blocks conflicting names atomically',()=>{
+ const ds=fixture(),before=structuredClone(ds);let id=0;
+ const text='000123,测试候选人\n001,批量测试甲\n001,批量测试甲\n002,批量测试乙';
+ const preview=previewRoster(ds,text);assert.equal(preview.additions.length,2);assert.equal(preview.skipped,2);
+ const result=importRoster(ds,text,'id-name',()=> 'bulk-'+(++id));
+ assert.equal(result.added,2);assert.equal(result.skipped,2);assert.equal(result.firstId,'bulk-1');assert.deepEqual(result.data.candidates[0],ds.candidates[0]);assert.deepEqual(result.data.evaluations,ds.evaluations);assert.deepEqual(ds,before);
+ for(const text of ['003,新同学\n000123,不同姓名','003,新同学\n003,另一个人'])assert.throws(()=>importRoster(ds,text,'id-name',()=> 'unused'),/对应不同姓名/);
+ assert.deepEqual(ds,before);
+});
+test('pending profiles survive reload and backup with no scores, owner, or timer',()=>{
+ const ds=importRoster(view(empty()),'001,待补充测试','id-name',()=> 'pending',1000).data,c=ds.candidates[0];
+ assert.equal(needsCandidateProfile(c),true);assert.equal(c.experience,'');assert.equal(c.special,'');assert.equal(c.reviewerId,undefined);assert.deepEqual(ds.evaluations,[]);
+ const memory=new Map();globalThis.localStorage={getItem:k=>memory.get(k)||null,setItem:(k,v)=>memory.set(k,v)};
+ writeLocal(ds);assert.equal(needsCandidateProfile(view(readLocal()).candidates[0]),true);
+ for(const type of ['all','roster']){const restored=mergePackage(empty(),pack(ds,type),bank).data;assert.deepEqual(restored.candidates,ds.candidates);assert.deepEqual(restored.evaluations,[]);}
+});
+test('pending profiles require both choices before any scoring and completion itself does not start timing',()=>{
+ const initial=importRoster(view(empty()),'001,待补充测试','id-name',()=> 'pending').data,c=initial.candidates[0];
+ const draft={scores:{feeling:2},asked:[],responses:{},notes:'',availability:'',status:'draft',version:0};
+ for(const submit of [false,true])assert.throws(()=>prepareEvaluation(initial,draft,c.id,initial.me.id,bank,submit),/请先补充/);
+ for(const values of [{},{experience:'new'},{special:'none'}])assert.throws(()=>prepareCandidate(initial,{...c,...values},c.id,bank),/请补充/);
+ for(const special of ['none','photo','lightning']){
+  const result=prepareCandidate(initial,{...c,experience:'experienced',special,campus:'闵行'},c.id,bank);
+  assert.equal(needsCandidateProfile(result.candidate),false);assert.equal(result.classificationChanged,false);assert.deepEqual(result.data.evaluations,[]);assert.equal(result.candidate.reviewerId,undefined);
+  const saved=prepareEvaluation(result.data,{...draft,scores:special==='photo'?{photography:5}:special==='lightning'?{work:2}:draft.scores},c.id,initial.me.id,bank,false,10000);
+  assert.equal(saved.saved.timing.startedAt,10000);assert.equal(saved.data.candidates[0].reviewerId,initial.me.id);
+ }
+ assert.throws(()=>prepareCandidate(initial,{...c,experience:'new',special:'lightning'},c.id,bank),/闵行/);
+});
+test('a pending roster cannot overwrite completed profiles or make incomplete ratings importable',()=>{
+ const ds=importRoster(view(empty()),'001,名单测试','id-name',()=> 'pending').data,c=ds.candidates[0],pending=pack(ds,'roster');
+ const complete=prepareCandidate(ds,{...c,experience:'new',special:'none'},c.id,bank).data;
+ assert.equal(mergePackage(complete,pending,bank).data.candidates[0].special,'none');
+ const legacy=structuredClone(complete);delete legacy.candidates[0].profileVersion;delete legacy.candidates[0].profileUpdatedAt;
+ assert.equal(mergePackage(legacy,pending,bank).data.candidates[0].special,'none');
+ assert.equal(mergePackage(ds,pack(complete,'roster'),bank).data.candidates[0].special,'none');
+ const invalid=pack(ds);invalid.evaluations=[{...fixture().evaluations[0],userId:ds.me.id,candidateId:c.id,status:'draft'}];
+ assert.throws(()=>mergePackage(empty(),invalid,bank),/请先补充/);
+});
+test('normalized ranking uses numeric full precision, stable ties and missing-last without changing inputs',()=>{
+ const candidates=['negative','zero','positive','tie','missing','draft','precise'].map(id=>({id}));
+ const rows=[['negative',-.9],['zero',0],['positive',.10001],['tie',.10001],['missing',null],['precise',.10002]].map(([candidateId,normal])=>({candidateId,normal,status:'submitted'}));rows.push({candidateId:'draft',normal:10,status:'draft'});
+ const before=structuredClone({candidates,rows});
+ assert.deepEqual(rankCandidates(candidates,rows).map(c=>c.id),['precise','positive','tie','zero','negative','missing','draft']);
+ assert.deepEqual({candidates,rows},before);assert.deepEqual(rankCandidates(candidates,[]),candidates);
+});
+test('roster ranking follows workbook normalization per reviewer instead of raw total',()=>{
+ const cs=['high-raw','low-peer','normalized-best','other-peer'].map(candidate);
+ const es=[['a',0,3],['a',1,2.5],['b',2,2],['b',3,1]].map(([userId,i,score])=>({userId,candidateId:cs[i].id,status:'submitted',scores:{feeling:score,thinking:score,response:score,dialogue:score,impression:1}}));
+ const rows=enrich(es,cs);assert.ok(rows[0].base>rows[2].base);assert.ok(rows[0].normal<rows[2].normal);
+ assert.equal(rankCandidates(cs,rows)[0].id,'normalized-best');
+});
