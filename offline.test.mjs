@@ -377,9 +377,27 @@ test('normalized ranking uses numeric full precision, stable ties and missing-la
  assert.deepEqual(rankCandidates(candidates,rows).map(c=>c.id),['precise','positive','tie','zero','negative','missing','draft']);
  assert.deepEqual({candidates,rows},before);assert.deepEqual(rankCandidates(candidates,[]),candidates);
 });
-test('roster ranking follows workbook normalization per reviewer instead of raw total',()=>{
+test('reviewers with two distinct scores each produce equal population Z-score ranks',()=>{
  const cs=['high-raw','low-peer','normalized-best','other-peer'].map(candidate);
  const es=[['a',0,3],['a',1,2.5],['b',2,2],['b',3,1]].map(([userId,i,score])=>({userId,candidateId:cs[i].id,status:'submitted',scores:{feeling:score,thinking:score,response:score,dialogue:score,impression:1}}));
- const rows=enrich(es,cs);assert.ok(rows[0].base>rows[2].base);assert.ok(rows[0].normal<rows[2].normal);
- assert.equal(rankCandidates(cs,rows)[0].id,'normalized-best');
+ const rows=enrich(es,cs);assert.ok(rows[0].base>rows[2].base);assert.deepEqual(rows.map(row=>row.normal),[1,-1,1,-1]);
+ assert.equal(rankCandidates(cs,rows)[0].id,'high-raw');
+});
+
+test('Z-scores include zero and partition extra scores by reviewer and specialty',()=>{
+ const candidates = ['photo','photo','lightning','lightning','photo','photo'].map((special,i)=>({...candidate(String(i)),special}));
+ const evaluations = candidates.map((c,i)=>({
+  userId: i===4 ? 'other' : 'reviewer',
+  candidateId:c.id, status:i===5 ? 'draft' : 'submitted',
+  scores:{feeling:[0,1,2,1,3,3][i],thinking:0,response:0,dialogue:0,impression:0,
+   ...(c.special==='photo' ? {photography:[0,6,0,0,9,10][i]} : {work:2,scene1:2,scene2:2})},
+ }));
+ const rows = enrich(evaluations,candidates);
+ assert.equal(rows.length,5);
+ // The reviewer's base totals are 0, 1, 2, 1. Mean = 1, population variance = 0.5.
+ assert.ok(Math.abs(rows[0].normal + Math.SQRT2) < 1e-12);
+ assert.equal(rows[1].normal,0);
+ assert.ok(Math.abs(rows[2].normal - Math.SQRT2) < 1e-12);
+ assert.equal(rows[4].normal,null);
+ assert.deepEqual(rows.map(row=>row.extraNormal),[-1,1,null,null,null]);
 });
